@@ -207,11 +207,20 @@ void PhilipsSicp::loop() {
   bool progress = true;
   while (progress && !this->rx_buf_.empty()) {
     progress = false;
-    // Extended framing: A6 01 00 00 00 SIZE 01 CMD... CHECKSUM
-    if (this->rx_buf_.size() >= 7 && this->rx_buf_[0] == 0xA6 && this->rx_buf_[1] == 0x01 &&
-        this->rx_buf_[2] == 0x00 && this->rx_buf_[3] == 0x00 && this->rx_buf_[4] == 0x00) {
-      uint8_t size = this->rx_buf_[5];
-      size_t total = (size_t) size + 6;
+    // Extended framing (observed on hardware, both directions):
+    //   TX host->display: A6 01 00 00 00 SIZE 01 CMD... CHECKSUM
+    //   RX display->host: 21 01 00 00 SIZE 01 CMD... CHECKSUM
+    //   SIZE = len(CMD) + 2, CHECKSUM = XOR of every preceding frame byte.
+    //   (For TX the 0xA7-based formula from the legacy implementation is
+    //   identical, since A6^01^00^00^00 == A7.)
+    uint8_t magic = this->rx_buf_[0];
+    size_t hdr = 0;  // index of the SIZE byte
+    if (this->rx_buf_.size() >= 7 && (magic == 0xA6 || magic == 0x21) && this->rx_buf_[1] == 0x01 &&
+        this->rx_buf_[2] == 0x00 && this->rx_buf_[3] == 0x00 &&
+        (magic == 0x21 || this->rx_buf_[4] == 0x00)) {
+      hdr = (magic == 0xA6) ? 5 : 4;
+      uint8_t size = this->rx_buf_[hdr];
+      size_t total = (size_t) size + hdr + 1;
       if (total < 8 || total > 64) {
         ESP_LOGW(TAG, "RX extended frame has implausible SIZE %02X, dropping lead byte", size);
         this->rx_buf_.erase(this->rx_buf_.begin());
@@ -221,11 +230,13 @@ void PhilipsSicp::loop() {
       if (this->rx_buf_.size() < total)
         break;  // wait for more bytes
       std::vector<uint8_t> frame(this->rx_buf_.begin(), this->rx_buf_.begin() + total);
-      uint8_t ctrl = frame[6];
+      uint8_t ctrl = frame[hdr + 1];
       size_t cmdlen = (size_t) size - 2;
-      std::vector<uint8_t> cmd(frame.begin() + 7, frame.begin() + 7 + cmdlen);
+      std::vector<uint8_t> cmd(frame.begin() + hdr + 2, frame.begin() + hdr + 2 + cmdlen);
       uint8_t rx_sum = frame[total - 1];
-      uint8_t calc = extended_checksum(cmd);
+      uint8_t calc = 0;
+      for (size_t i = 0; i + 1 < total; i++)
+        calc ^= frame[i];
       // Note: header control bytes are fixed; warn if inner control != 0x01.
       if (ctrl != 0x01)
         ESP_LOGD(TAG, "RX extended inner control is %02X (expected 01)", ctrl);
@@ -301,8 +312,10 @@ void PhilipsSicp::on_frame_(const std::vector<uint8_t> &payload, bool /*extended
 }
 
 void PhilipsSicp::on_ack_report_(uint8_t value) {
-  if (value == ACK_VALUE) {
-    ESP_LOGD(TAG, "ACK received");
+  if (value == ACK_VALUE || value == 0x00) {
+    // NOTE: the SICP document specifies ACK as 00 06, but observed hardware
+    // replies to successful SET commands with 00 00. Accept both.
+    ESP_LOGD(TAG, "SET acknowledged (00 %02X)", value);
     this->outstanding_.active = false;
     return;
   }
@@ -328,7 +341,13 @@ void PhilipsSicp::on_ack_report_(uint8_t value) {
     this->outstanding_.active = false;
     return;
   }
+  // Observed on hardware: e.g. a temperature GET on a display without that
+  // sensor is answered with 00 03. Treat unknown comm-control values as
+  // terminal for this attempt instead of retrying.
   ESP_LOGW(TAG, "Unknown comm-control value %02X", value);
+  // Terminal for this attempt: the display answered with something we do not
+  // understand (e.g. an undocumented error reply), retrying will not help.
+  this->outstanding_.active = false;
 }
 
 void PhilipsSicp::on_sicp_report_(const std::vector<uint8_t> &data) {
@@ -370,7 +389,8 @@ void PhilipsSicp::handle_power_report_(const std::vector<uint8_t> &data) {
   if (data.size() < 2)
     return;
   bool on = (data[1] == 0x02);
-  if (data[1] != 0x01 && data[1] != 0x02) {
+  ESP_LOGD(TAG, "Power report value=%02X on=%d switch=%s", data[1], (int) on,
+           this->power_switch_ != nullptr ? "set" : "null");  if (data[1] != 0x01 && data[1] != 0x02) {
     ESP_LOGW(TAG, "Unexpected power value %02X", data[1]);
     return;
   }

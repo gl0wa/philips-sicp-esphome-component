@@ -112,7 +112,7 @@ covers only enabled entities, one query per update tick (no bursts).
 | `contrast`        | number | SET `32` / GET `33`, 0–100            | Same as above.                                               |
 | `sharpness`       | number | SET `32` / GET `33`, 0–100            | Same as above.                                               |
 | `operating_hours` | sensor | GET `0F 02`, 16-bit MSB/LSB, hours    | Read-only.                                                   |
-| `temperature`     | sensor | GET `2F`, degrees C                   | Read-only, documentation-derived.                            |
+| `temperature`     | sensor | GET `2F`, degrees C                   | Read-only; unsupported displays answer `00 03`.            |
 | `pip`             | switch | SET `3C`                              | Enable/disable; position preserved. No GET defined.          |
 | `pip_position`    | select | SET `3C`                              | Bottom/Top Left/Right (0–3). Optimistic + SET echo.          |
 | `pip_source`      | select | SET `84`, GET `85`                    | Same input list; report parsing is best-effort (see below).  |
@@ -141,34 +141,64 @@ Known-good vectors (also covered by `tests/test_protocol.py`):
 Power ON : cmd 18 02            -> A6 01 00 00 00 04 01 18 02 B8
 Power OFF: cmd 18 01            -> A6 01 00 00 00 04 01 18 01 BB
 Volume 50: cmd 44 32            -> A6 01 00 00 00 04 01 44 32 D4
-Input HDMI: cmd AC 06 02 01 00  -> A6 01 00 00 00 07 01 AC 06 02 01 00 08 (computed)
+Input HDMI: cmd AC 06 02 01 00  -> A6 01 00 00 00 07 01 AC 06 02 01 00 08
 ```
 
-Note: a legacy recording of the HDMI packet ends in `0F` rather than the
-algorithmic `08`. Every other proven vector matches the algorithm exactly, so
-the component implements the algorithm. If your display rejects input-select
-commands, capture the reply (see below) and report what you see.
+The HDMI checksum above is the algorithmic `08`, verified working on
+hardware (a legacy recording ends in `0F`; both appear to be tolerated, but
+the component emits the correct `08`).
 
-RX handling is diagnostic-first: the parser accepts both the extended framing
-above and the documented generic SICP framing
-(`MsgSize Control Data... Checksum`, XOR checksum), logs every accepted frame
-at DEBUG with hex, logs checksum failures as warnings, and never spams INFO
-with raw packets. ACK (`00 06`), NACK (`00 15`), NAV (`00 18`) complete or
-retry the outstanding SET; GET reports update entities. GET polling sends one
-query per update tick; a command is retried up to `max_retries` after
-`command_timeout` (default 500 ms, per SICP guidance).
+Replies from the display use the same layout with a different magic byte and
+one fewer header zero:
+
+```text
+21 01 00 00 | SIZE | 01 | RESPONSE... | CHECKSUM
+SIZE = len(RESPONSE) + 2
+CHECKSUM = XOR of every preceding frame byte
+```
+
+Captured examples (volume 50, picture format Normal, power ON):
+
+```text
+21 01 00 00 04 01 45 32 52
+21 01 00 00 04 01 3B 00 1E
+21 01 00 00 04 01 19 02 3E
+```
+
+Two deviations from the generic SICP document were found on hardware and are
+handled by the component:
+
+- Successful SET commands are acknowledged with `00 00`, not the documented
+  `00 06`. Both values are accepted as ACK; `00 15` (NACK) is retried and
+  `00 18` (NAV) completes the attempt.
+- A temperature GET (`2F`) on a display without that sensor is answered with
+  the undocumented comm-control value `00 03`. Unknown comm-control values
+  complete the attempt without retrying, and the temperature entity simply
+  remains without state on such displays.
+
+RX handling accepts both the extended framing above and the documented
+generic SICP framing (`MsgSize Control Data... Checksum`, XOR checksum) as a
+fallback, logs every accepted frame at DEBUG with hex, logs checksum failures
+as warnings, and never spams INFO with raw packets. GET reports update
+entities; GET polling sends one query per update tick; a command is retried up
+to `max_retries` after `command_timeout` (default 500 ms, per SICP guidance).
 
 ## Tested vs documentation-derived
 
-Hardware-verified TX framing: power on/off (byte-for-byte), volume SET
-structure. Everything else (input select payloads, video params, picture
-format values, PIP, PIP source, operating hours, temperature) is implemented
-from SICP documentation plus legacy recordings and is marked accordingly in
-code comments. DVI input mapping (`AC 07 01 01 00`) is documentation-derived
-and untested. PIP source GET/SET lengths vary across documentation examples;
-the component sends `84 FD <src>` and accepts both 2-byte and longer reports
-on a best-effort basis. RX envelope behavior has not yet been characterized on
-a live display; the parser + logging above exists precisely to establish it.
+Verified on hardware (byte-for-byte TX, live RX decode, state sync):
+
+- TX framing and checksum for power on/off, volume SET/GET, input GET/SET
+  (including the HDMI payload), picture format GET, video GET, operating
+  hours GET, PIP source GET.
+- RX framing: `21` magic, XOR-over-frame checksum, `00 00` SET success reply.
+- Entity state sync for power, input, volume, picture format, brightness,
+  contrast, sharpness, operating hours, PIP source.
+
+Documentation-derived and untested: DVI input mapping (`AC 07 01 01 00`),
+PIP enable/position SETs, PIP source SET length, temperature (answered with
+`00 03` on the tested display, i.e. unsupported there). The temperature,
+PIP enable/position entities are included for displays that support them but
+could not be exercised here.
 
 ## Troubleshooting
 
