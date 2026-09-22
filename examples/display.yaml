@@ -1,0 +1,84 @@
+# Generic example for the philips_sicp external component.
+#
+# Adapt the ESP32 pins/board to your wiring. UART pins below are examples only.
+# Do NOT connect the ESP32 UART (TTL) directly to the display's RS-232 port.
+# Use a TTL-to-RS-232 level shifter (e.g. MAX3232 class device) in between.
+#
+# See README.md for wiring and troubleshooting.
+
+external_components:
+  - source: github://gl0wa/philips-sicp-esphome-component
+    components: [philips_sicp]
+
+esphome:
+  name: philips-display
+  friendly_name: Philips Display
+
+esp32:
+  variant: esp32
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+uart:
+  id: display_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+philips_sicp:
+  id: display
+  uart_id: display_uart
+  update_interval: 30s
+  # Optional timing tuning (defaults follow the SICP guidance):
+  # command_timeout: 500ms
+  # max_retries: 2
+  # command_gap: 60ms
+
+  power:
+    name: "Display Power"
+
+  input:
+    name: "Display Input"
+
+  volume:
+    name: "Display Volume"
+
+  picture_format:
+    name: "Display Picture Format"
+
+  brightness:
+    name: "Display Brightness"
+  contrast:
+    name: "Display Contrast"
+  sharpness:
+    name: "Display Sharpness"
+
+  operating_hours:
+    name: "Display Operating Hours"
+
+  temperature:
+    name: "Display Temperature"
+
+  pip:
+    name: "Display PIP"
+  pip_position:
+    name: "Display PIP Position"
+  pip_source:
+    name: "Display PIP Source"
