@@ -99,6 +99,8 @@ philips_sicp:
 
 Every entity is optional; configure only what you need. Polling automatically
 covers only enabled entities, one query per update tick (no bursts).
+`examples/display.yaml` shows every available key, including the extended
+features below.
 
 ## Entities
 
@@ -116,6 +118,33 @@ covers only enabled entities, one query per update tick (no bursts).
 | `pip`             | switch | SET `3C`                              | Enable/disable; position preserved. No GET defined.          |
 | `pip_position`    | select | SET `3C`                              | Bottom/Top Left/Right (0–3). Optimistic + SET echo.          |
 | `pip_source`      | select | SET `84`, GET `85`                    | Same input list; report parsing is best-effort (see below).  |
+
+Extended SICP features. Status annotations: **verified** = exercised
+against hardware; **doc** = implemented from documentation, awaiting hardware
+confirmation; **unsupported-here** = the tested display answers with an error,
+entity stays without state there but works where supported.
+
+| Key                  | Type        | SICP                  | Status + notes                                                        |
+|----------------------|-------------|-----------------------|-----------------------------------------------------------------------|
+| `sicp_version`       | text_sensor | GET `A2 00`           | **doc** — SICP protocol version string.                               |
+| `software_version`   | text_sensor | GET `A2 01`           | **doc** — display software label string.                              |
+| `serial`             | text_sensor | GET `15`              | **doc** — 14-char production code, read-only.                         |
+| `remote_lock`        | switch      | SET `1C` / GET `1D`   | **doc, ambiguous** — doc packs the report in one bit; remote follows bit0, keyboard is optimistic-only until clarified on hardware. `ON` = unlocked. |
+| `keyboard_lock`      | switch      | SET `1C` (combined)   | **doc** — optimistic-only (see above). `ON` = unlocked.               |
+| `cold_start`         | select      | SET `A3` (no GET)     | **doc** — Off / Forced On / Last Status. Write-only, optimistic. **Changes boot behavior — set deliberately.** |
+| `treble` / `bass`    | number 0–100| SET `42` / GET `43`   | **doc** — bidirectional like volume.                                  |
+| `min_volume` / `max_volume` / `switch_on_volume` | number 0–100 | SET `B8` (no GET) | **doc** — write-only triple; the component enforces min ≤ switch-on ≤ max. **Overwrites audio constraints — set deliberately.** |
+| `smartpower`         | select      | SET `DD` (no GET)     | **doc, payload uncertain** — Off/Low/Medium/High; payload follows the doc's worked example (`DD level`), the field table suggests an extra type byte. Write-only, optimistic. |
+| `auto_adjust`        | button      | SET `70 40 00`        | **doc** — VGA alignment trigger, no reply data expected.              |
+| `autosignal_probe`   | button      | GET `AF`              | **doc, report unknown** — the document's section is missing; sends the GET and logs the raw reply at DEBUG for discovery. |
+| `tiling`             | switch      | SET `22` / GET `23`   | **doc** — video-wall enable; uses don't-overwrite codes for untouched fields. |
+| `tiling_frame_comp`  | switch      | SET `22` / GET `23`   | **doc** — frame compensation flag.                                    |
+| `tiling_position`    | number 1–25 | SET `22` / GET `23`   | **doc** — wall position.                                              |
+| `tiling_h_monitors` / `tiling_v_monitors` | number 1–5 | SET `22` / GET `23` | **doc** — packed as `(V-1)*5+(H-1)+1` per documented examples. |
+
+Deliberately **not** implemented: light sensor (`24`/`25`), OSD rotating
+(`26`/`27`), MEMC (`28`/`29`), touch (`1E`/`1F`) — the SICP document marks
+all of them NOT SUPPORTED.
 
 Picture-format mapping used here is Normal = 0, Custom = 1, Real = 2,
 Full = 3, 21:9 = 4, Dynamic = 5. Some generic documentation tables list a
@@ -195,10 +224,13 @@ Verified on hardware (byte-for-byte TX, live RX decode, state sync):
   contrast, sharpness, operating hours, PIP source.
 
 Documentation-derived and untested: DVI input mapping (`AC 07 01 01 00`),
-PIP enable/position SETs, PIP source SET length, temperature (answered with
-`00 03` on the tested display, i.e. unsupported there). The temperature,
-PIP enable/position entities are included for displays that support them but
-could not be exercised here.
+PIP enable/position SETs, PIP source SET length, and every entity in the
+"Extended SICP features" table above except where marked verified. The
+temperature, PIP enable/position entities are included for displays that
+support them but could not be exercised here. The auto-signal-detect section
+is missing from the SICP document itself, so only a discovery probe is
+provided. Tiling entities target video-wall setups and are untested on a
+single display.
 
 ## Troubleshooting
 

@@ -154,3 +154,60 @@ def test_rx_unsupported_command_reply():
     # sensor is answered with 00 03 (undocumented).
     assert rx_parse(bytes.fromhex("21 01 00 00 04 01 00 03 26")) == bytes([0x00, 0x03])
     assert classify_comm_control(0x03) == "unknown-terminal"
+
+
+def test_extended_command_vectors():
+    # Documentation-derived vectors; checksum follows the same algorithm.
+    vectors = {
+        (0xA2, 0x00): "A6 01 00 00 00 04 01 A2 00 00",
+        (0xA2, 0x01): "A6 01 00 00 00 04 01 A2 01 01",
+        (0x1D,): "A6 01 00 00 00 03 01 1D B8",
+        (0x1C, 0x03): "A6 01 00 00 00 04 01 1C 03 BD",
+        (0xA3, 0x02): "A6 01 00 00 00 04 01 A3 02 03",
+        (0xB8, 0x0A, 0x4D, 0x32): "A6 01 00 00 00 06 01 B8 0A 4D 32 6D",
+        (0x43,): "A6 01 00 00 00 03 01 43 E6",
+        (0x42, 0x4D, 0x4D): "A6 01 00 00 00 05 01 42 4D 4D E1",
+        (0xDD, 0x02): "A6 01 00 00 00 04 01 DD 02 7D",
+        (0x70, 0x40, 0x00): "A6 01 00 00 00 05 01 70 40 00 93",
+        (0x15,): "A6 01 00 00 00 03 01 15 B0",
+        (0x23,): "A6 01 00 00 00 03 01 23 86",
+        (0x22, 0x01, 0x02, 0x00, 0x00): "A6 01 00 00 00 07 01 22 01 02 00 00 80",
+        (0xAF,): "A6 01 00 00 00 03 01 AF 0A",
+    }
+    for cmd, expected in vectors.items():
+        assert build_packet(bytes(cmd)).hex(" ").upper() == expected, cmd
+
+
+def tiling_vh_to_code(v, h):
+    assert 1 <= v <= 5 and 1 <= h <= 5
+    return (v - 1) * 5 + (h - 1) + 1
+
+
+def tiling_code_to_vh(code):
+    assert 0x01 <= code <= 0x19
+    idx = code - 1
+    return idx // 5 + 1, idx % 5 + 1
+
+
+def test_tiling_vh_packing():
+    # Documented examples: V=2,H=3 -> 0x08; V=5,H=4 -> 0x18; V=5,H=5 -> 0x19.
+    assert tiling_vh_to_code(2, 3) == 0x08
+    assert tiling_vh_to_code(5, 4) == 0x18
+    assert tiling_vh_to_code(5, 5) == 0x19
+    assert tiling_vh_to_code(1, 1) == 0x01
+    for code in range(0x01, 0x1A):
+        v, h = tiling_code_to_vh(code)
+        assert tiling_vh_to_code(v, h) == code
+
+
+def clamp_volume_limits(mn, mx, sw):
+    mn, mx, sw = max(0, min(100, mn)), max(0, min(100, mx)), max(0, min(100, sw))
+    sw = max(mn, min(mx, sw))
+    return mn, mx, sw
+
+
+def test_volume_limits_rule():
+    # Mirrors PhilipsSicp::request_volume_limit (min <= switch-on <= max).
+    assert clamp_volume_limits(10, 77, 50) == (10, 77, 50)
+    assert clamp_volume_limits(60, 77, 50) == (60, 77, 60)
+    assert clamp_volume_limits(10, 40, 50) == (10, 40, 40)

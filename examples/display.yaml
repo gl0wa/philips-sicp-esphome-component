@@ -82,3 +82,51 @@ philips_sicp:
     name: "Display PIP Position"
   pip_source:
     name: "Display PIP Source"
+
+  # Extended SICP features (see README for per-feature support status).
+  # All are optional; enable only what your display supports.
+  sicp_version:
+    name: "Display SICP Version"
+  software_version:
+    name: "Display Software Version"
+  serial:
+    name: "Display Serial Code"
+
+  remote_lock:
+    name: "Display Remote Lock"
+  keyboard_lock:
+    name: "Display Keyboard Lock"
+
+  cold_start:
+    name: "Display Cold Start Behavior"
+
+  treble:
+    name: "Display Treble"
+  bass:
+    name: "Display Bass"
+
+  min_volume:
+    name: "Display Min Volume"
+  max_volume:
+    name: "Display Max Volume"
+  switch_on_volume:
+    name: "Display Switch-On Volume"
+
+  smartpower:
+    name: "Display SmartPower"
+
+  auto_adjust:
+    name: "Display VGA Auto Adjust"
+  autosignal_probe:
+    name: "Display Auto Signal Probe"
+
+  tiling:
+    name: "Display Tiling"
+  tiling_frame_comp:
+    name: "Display Tiling Frame Comp"
+  tiling_position:
+    name: "Display Tiling Position"
+  tiling_h_monitors:
+    name: "Display Tiling H Monitors"
+  tiling_v_monitors:
+    name: "Display Tiling V Monitors"

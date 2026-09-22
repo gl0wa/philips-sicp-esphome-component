@@ -28,6 +28,12 @@ static const char *const PIP_POSITION_OPTIONS[] = {"Bottom Left", "Top Left", "T
                                                    "Bottom Right"};
 static const size_t PIP_POSITION_OPTIONS_COUNT = 4;
 
+static const char *const COLD_START_OPTIONS[] = {"Off", "Forced On", "Last Status"};
+static const size_t COLD_START_OPTIONS_COUNT = 3;
+
+static const char *const SMARTPOWER_OPTIONS[] = {"Off", "Low", "Medium", "High"};
+static const size_t SMARTPOWER_OPTIONS_COUNT = 4;
+
 static std::string hex_dump(const std::vector<uint8_t> &v) {
   char buf[8];
   std::string s;
@@ -92,6 +98,25 @@ const char *const *PhilipsSicp::picture_format_options() { return PICTURE_FORMAT
 size_t PhilipsSicp::picture_format_options_size() { return PICTURE_FORMAT_OPTIONS_COUNT; }
 const char *const *PhilipsSicp::pip_position_options() { return PIP_POSITION_OPTIONS; }
 size_t PhilipsSicp::pip_position_options_size() { return PIP_POSITION_OPTIONS_COUNT; }
+const char *const *PhilipsSicp::cold_start_options() { return COLD_START_OPTIONS; }
+size_t PhilipsSicp::cold_start_options_size() { return COLD_START_OPTIONS_COUNT; }
+const char *const *PhilipsSicp::smartpower_options() { return SMARTPOWER_OPTIONS; }
+size_t PhilipsSicp::smartpower_options_size() { return SMARTPOWER_OPTIONS_COUNT; }
+
+uint8_t PhilipsSicp::tiling_vh_to_code(uint8_t v, uint8_t h) {
+  if (v < 1 || v > 5 || h < 1 || h > 5)
+    return 0;
+  return (uint8_t) ((v - 1) * 5 + (h - 1) + 1);
+}
+
+bool PhilipsSicp::tiling_code_to_vh(uint8_t code, uint8_t *v, uint8_t *h) {
+  if (code < 0x01 || code > 0x19 || v == nullptr || h == nullptr)
+    return false;
+  uint8_t idx = (uint8_t) (code - 1);
+  *v = (uint8_t) (idx / 5 + 1);
+  *h = (uint8_t) (idx % 5 + 1);
+  return true;
+}
 
 void PhilipsSicp::setup() {
   this->rx_buf_.reserve(64);
@@ -128,6 +153,40 @@ void PhilipsSicp::dump_config() {
     LOG_SENSOR("  ", "Operating hours", this->operating_hours_sensor_);
   if (this->temperature_sensor_ != nullptr)
     LOG_SENSOR("  ", "Temperature", this->temperature_sensor_);
+  if (this->sicp_version_text_ != nullptr)
+    LOG_TEXT_SENSOR("  ", "SICP version", this->sicp_version_text_);
+  if (this->software_version_text_ != nullptr)
+    LOG_TEXT_SENSOR("  ", "Software version", this->software_version_text_);
+  if (this->serial_text_ != nullptr)
+    LOG_TEXT_SENSOR("  ", "Serial code", this->serial_text_);
+  if (this->remote_lock_switch_ != nullptr)
+    LOG_SWITCH("  ", "Remote lock", this->remote_lock_switch_);
+  if (this->keyboard_lock_switch_ != nullptr)
+    LOG_SWITCH("  ", "Keyboard lock", this->keyboard_lock_switch_);
+  if (this->cold_start_select_ != nullptr)
+    LOG_SELECT("  ", "Cold start", this->cold_start_select_);
+  if (this->smartpower_select_ != nullptr)
+    LOG_SELECT("  ", "SmartPower", this->smartpower_select_);
+  if (this->treble_number_ != nullptr)
+    LOG_NUMBER("  ", "Treble", this->treble_number_);
+  if (this->bass_number_ != nullptr)
+    LOG_NUMBER("  ", "Bass", this->bass_number_);
+  if (this->min_volume_number_ != nullptr)
+    LOG_NUMBER("  ", "Min volume", this->min_volume_number_);
+  if (this->max_volume_number_ != nullptr)
+    LOG_NUMBER("  ", "Max volume", this->max_volume_number_);
+  if (this->switch_on_volume_number_ != nullptr)
+    LOG_NUMBER("  ", "Switch-on volume", this->switch_on_volume_number_);
+  if (this->tiling_enable_switch_ != nullptr)
+    LOG_SWITCH("  ", "Tiling", this->tiling_enable_switch_);
+  if (this->tiling_frame_switch_ != nullptr)
+    LOG_SWITCH("  ", "Tiling frame comp", this->tiling_frame_switch_);
+  if (this->tiling_position_number_ != nullptr)
+    LOG_NUMBER("  ", "Tiling position", this->tiling_position_number_);
+  if (this->tiling_h_number_ != nullptr)
+    LOG_NUMBER("  ", "Tiling H monitors", this->tiling_h_number_);
+  if (this->tiling_v_number_ != nullptr)
+    LOG_NUMBER("  ", "Tiling V monitors", this->tiling_v_number_);
 }
 
 void PhilipsSicp::enqueue_command(const std::vector<uint8_t> &command, bool expect_report) {
@@ -379,6 +438,21 @@ void PhilipsSicp::on_sicp_report_(const std::vector<uint8_t> &data) {
     case CMD_TEMP_GET:
       this->handle_temp_report_(data);
       break;
+    case CMD_VERSION_GET:
+      this->handle_version_report_(data);
+      break;
+    case CMD_INPUT_LOCK_GET:
+      this->handle_input_lock_report_(data);
+      break;
+    case CMD_AUDIO_GET:
+      this->handle_audio_report_(data);
+      break;
+    case CMD_SERIAL_GET:
+      this->handle_serial_report_(data);
+      break;
+    case CMD_TILING_GET:
+      this->handle_tiling_report_(data);
+      break;
     default:
       ESP_LOGV(TAG, "Unhandled report code %02X", data[0]);
       break;
@@ -485,6 +559,77 @@ void PhilipsSicp::handle_temp_report_(const std::vector<uint8_t> &data) {
     this->temperature_sensor_->publish_state((float) data[1]);
 }
 
+void PhilipsSicp::handle_version_report_(const std::vector<uint8_t> &data) {
+  if (data.size() < 2)
+    return;
+  std::string label(reinterpret_cast<const char *>(data.data() + 1), data.size() - 1);
+  // A2 reports carry no "which label" byte, so route via the label requested
+  // by the outstanding GET (tracked in last_version_label_).
+  text_sensor::TextSensor *target =
+      (this->last_version_label_ == 0x01) ? this->software_version_text_ : this->sicp_version_text_;
+  if (target != nullptr)
+    target->publish_state(label);
+  else
+    ESP_LOGD(TAG, "Version report with no version entity enabled: '%s'", label.c_str());
+}
+
+void PhilipsSicp::handle_input_lock_report_(const std::vector<uint8_t> &data) {
+  if (data.size() < 2)
+    return;
+  // Documentation-derived and ambiguous: bit0 reads 1=unlocked for the remote
+  // control; upper bits are marked unused, so the keyboard switch stays
+  // optimistic-only and is never overwritten here.
+  bool remote_unlocked = (data[1] & 0x01) != 0;
+  this->remote_unlocked_ = remote_unlocked;
+  if (this->remote_lock_switch_ != nullptr)
+    this->remote_lock_switch_->publish_state(remote_unlocked);
+}
+
+void PhilipsSicp::handle_audio_report_(const std::vector<uint8_t> &data) {
+  if (data.size() < 3)
+    return;
+  this->treble_ = data[1];
+  this->bass_ = data[2];
+  this->audio_cache_valid_ = true;
+  if (this->treble_number_ != nullptr)
+    this->treble_number_->publish_state(this->treble_);
+  if (this->bass_number_ != nullptr)
+    this->bass_number_->publish_state(this->bass_);
+}
+
+void PhilipsSicp::handle_serial_report_(const std::vector<uint8_t> &data) {
+  if (data.size() < 2 || this->serial_text_ == nullptr)
+    return;
+  std::string code(reinterpret_cast<const char *>(data.data() + 1), data.size() - 1);
+  this->serial_text_->publish_state(code);
+}
+
+void PhilipsSicp::handle_tiling_report_(const std::vector<uint8_t> &data) {
+  if (data.size() < 5)
+    return;
+  this->tiling_enabled_ = (data[1] != 0x00);
+  this->tiling_frame_ = (data[2] != 0x00);
+  if (data[3] >= 0x01 && data[3] <= 0x19)
+    this->tiling_position_ = data[3];
+  uint8_t v = 1, h = 1;
+  if (tiling_code_to_vh(data[4], &v, &h)) {
+    this->tiling_v_ = v;
+    this->tiling_h_ = h;
+  } else {
+    ESP_LOGW(TAG, "Unknown tiling V/H code %02X", data[4]);
+  }
+  if (this->tiling_enable_switch_ != nullptr)
+    this->tiling_enable_switch_->publish_state(this->tiling_enabled_);
+  if (this->tiling_frame_switch_ != nullptr)
+    this->tiling_frame_switch_->publish_state(this->tiling_frame_);
+  if (this->tiling_position_number_ != nullptr)
+    this->tiling_position_number_->publish_state((float) this->tiling_position_);
+  if (this->tiling_h_number_ != nullptr)
+    this->tiling_h_number_->publish_state((float) this->tiling_h_);
+  if (this->tiling_v_number_ != nullptr)
+    this->tiling_v_number_->publish_state((float) this->tiling_v_);
+}
+
 // ---- High-level requests ----
 
 void PhilipsSicp::request_power(bool on) {
@@ -573,8 +718,9 @@ void PhilipsSicp::request_video_param(size_t slot, float value) {
 void PhilipsSicp::request_poll_once_() {
   // Round-robin over enabled pollable entities: one GET per update() call.
   // Order is fixed; disabled entities are skipped.
-  for (size_t i = 0; i < 8; i++) {
-    size_t slot = (this->poll_slot_ + i) % 8;
+  static const size_t NUM_SLOTS = 14;
+  for (size_t i = 0; i < NUM_SLOTS; i++) {
+    size_t slot = (this->poll_slot_ + i) % NUM_SLOTS;
     bool enqueued = true;
     switch (slot) {
       case 0:
@@ -626,18 +772,207 @@ void PhilipsSicp::request_poll_once_() {
         else
           enqueued = false;
         break;
+      case 8:
+        if (this->sicp_version_text_ != nullptr) {
+          this->last_version_label_ = 0x00;
+          this->enqueue_command({CMD_VERSION_GET, 0x00}, true);
+        } else {
+          enqueued = false;
+        }
+        break;
+      case 9:
+        if (this->software_version_text_ != nullptr) {
+          this->last_version_label_ = 0x01;
+          this->enqueue_command({CMD_VERSION_GET, 0x01}, true);
+        } else {
+          enqueued = false;
+        }
+        break;
+      case 10:
+        if (this->remote_lock_switch_ != nullptr || this->keyboard_lock_switch_ != nullptr)
+          this->enqueue_command({CMD_INPUT_LOCK_GET}, true);
+        else
+          enqueued = false;
+        break;
+      case 11:
+        if (this->treble_number_ != nullptr || this->bass_number_ != nullptr)
+          this->enqueue_command({CMD_AUDIO_GET}, true);
+        else
+          enqueued = false;
+        break;
+      case 12:
+        if (this->serial_text_ != nullptr)
+          this->enqueue_command({CMD_SERIAL_GET}, true);
+        else
+          enqueued = false;
+        break;
+      case 13:
+        if (this->tiling_enable_switch_ != nullptr || this->tiling_frame_switch_ != nullptr ||
+            this->tiling_position_number_ != nullptr || this->tiling_h_number_ != nullptr ||
+            this->tiling_v_number_ != nullptr)
+          this->enqueue_command({CMD_TILING_GET}, true);
+        else
+          enqueued = false;
+        break;
       default:
         enqueued = false;
         break;
     }
     if (enqueued) {
-      this->poll_slot_ = (slot + 1) % 8;
+      this->poll_slot_ = (slot + 1) % NUM_SLOTS;
       return;
     }
   }
 }
 
 void PhilipsSicp::update() { this->request_poll_once_(); }
+
+void PhilipsSicp::request_input_lock(size_t slot, bool unlocked) {
+  if (slot == 0)
+    this->remote_unlocked_ = unlocked;
+  else if (slot == 1)
+    this->keyboard_unlocked_ = unlocked;
+  else
+    return;
+  uint8_t v = 0;
+  if (this->remote_unlocked_)
+    v |= 0x01;
+  if (this->keyboard_unlocked_)
+    v |= 0x02;
+  this->enqueue_command({CMD_INPUT_LOCK_SET, v}, false);
+  // NOTE: the GET report documents only bit0, so the keyboard switch is
+  // optimistic-only and never overwritten by polling.
+  if (slot == 0 && this->remote_lock_switch_ != nullptr)
+    this->remote_lock_switch_->publish_state(unlocked);
+  if (slot == 1 && this->keyboard_lock_switch_ != nullptr)
+    this->keyboard_lock_switch_->publish_state(unlocked);
+}
+
+void PhilipsSicp::request_cold_start_by_index(size_t index) {
+  if (index >= COLD_START_OPTIONS_COUNT)
+    return;
+  this->enqueue_command({CMD_COLD_START_SET, static_cast<uint8_t>(index)}, false);
+  if (this->cold_start_select_ != nullptr)
+    this->cold_start_select_->publish_state(COLD_START_OPTIONS[index]);
+}
+
+void PhilipsSicp::request_volume_limit(size_t slot, float value) {
+  uint8_t v = (uint8_t) value;
+  if (v > 100)
+    v = 100;
+  if (slot == 0)
+    this->min_volume_ = v;
+  else if (slot == 1)
+    this->max_volume_ = v;
+  else if (slot == 2)
+    this->switch_on_volume_ = v;
+  else
+    return;
+  // Enforce the documented rule min <= switch-on <= max.
+  if (this->switch_on_volume_ < this->min_volume_)
+    this->switch_on_volume_ = this->min_volume_;
+  if (this->switch_on_volume_ > this->max_volume_)
+    this->switch_on_volume_ = this->max_volume_;
+  this->enqueue_command({CMD_VOLUME_LIMITS_SET, (uint8_t) this->min_volume_, (uint8_t) this->max_volume_,
+                         (uint8_t) this->switch_on_volume_},
+                        false);
+  if (this->min_volume_number_ != nullptr)
+    this->min_volume_number_->publish_state(this->min_volume_);
+  if (this->max_volume_number_ != nullptr)
+    this->max_volume_number_->publish_state(this->max_volume_);
+  if (this->switch_on_volume_number_ != nullptr)
+    this->switch_on_volume_number_->publish_state(this->switch_on_volume_);
+}
+
+void PhilipsSicp::request_audio(size_t slot, float value) {
+  uint8_t v = (uint8_t) value;
+  if (v > 100)
+    v = 100;
+  if (slot == 0)
+    this->treble_ = v;
+  else if (slot == 1)
+    this->bass_ = v;
+  else
+    return;
+  this->audio_cache_valid_ = true;
+  this->enqueue_command({CMD_AUDIO_SET, (uint8_t) this->treble_, (uint8_t) this->bass_}, false);
+  if (slot == 0 && this->treble_number_ != nullptr)
+    this->treble_number_->publish_state((float) v);
+  if (slot == 1 && this->bass_number_ != nullptr)
+    this->bass_number_->publish_state((float) v);
+}
+
+void PhilipsSicp::request_smartpower_by_index(size_t index) {
+  if (index >= SMARTPOWER_OPTIONS_COUNT)
+    return;
+  // Payload shape follows the document's worked example ([DD, level]);
+  // the field table suggests a type byte that the example omits.
+  this->enqueue_command({CMD_SMARTPOWER_SET, static_cast<uint8_t>(index)}, false);
+  if (this->smartpower_select_ != nullptr)
+    this->smartpower_select_->publish_state(SMARTPOWER_OPTIONS[index]);
+}
+
+void PhilipsSicp::request_auto_adjust() { this->enqueue_command({CMD_AUTO_ADJUST_SET, 0x40, 0x00}, false); }
+
+void PhilipsSicp::request_autosignal_probe() {
+  // GET payload is a bare command byte; the report layout is undocumented,
+  // so the reply is only logged (DEBUG) for discovery.
+  this->enqueue_command({CMD_AUTOSIGNAL_GET}, true);
+}
+
+void PhilipsSicp::send_tiling_set_() {
+  uint8_t vh = tiling_vh_to_code(this->tiling_v_, this->tiling_h_);
+  this->enqueue_command({CMD_TILING_SET, static_cast<uint8_t>(this->tiling_enabled_ ? 0x01 : 0x00),
+                         static_cast<uint8_t>(this->tiling_frame_ ? 0x01 : 0x00),
+                         this->tiling_position_, vh},
+                        false);
+}
+
+void PhilipsSicp::request_tiling_enable(bool on) {
+  this->tiling_enabled_ = on;
+  // Keep other fields: frame "don't overwrite" (0x02), position/VH keep.
+  this->enqueue_command({CMD_TILING_SET, static_cast<uint8_t>(on ? 0x01 : 0x00), 0x02, 0x00, 0x00},
+                        false);
+  if (this->tiling_enable_switch_ != nullptr)
+    this->tiling_enable_switch_->publish_state(on);
+}
+
+void PhilipsSicp::request_tiling_frame(bool on) {
+  this->tiling_frame_ = on;
+  this->enqueue_command({CMD_TILING_SET, static_cast<uint8_t>(this->tiling_enabled_ ? 0x01 : 0x00),
+                         static_cast<uint8_t>(on ? 0x01 : 0x00), 0x00, 0x00},
+                        false);
+  if (this->tiling_frame_switch_ != nullptr)
+    this->tiling_frame_switch_->publish_state(on);
+}
+
+void PhilipsSicp::request_tiling_geometry(size_t slot, float value) {
+  if (slot == 0) {
+    uint8_t p = (uint8_t) value;
+    if (p < 1 || p > 25)
+      return;
+    this->tiling_position_ = p;
+  } else if (slot == 1) {
+    uint8_t h = (uint8_t) value;
+    if (h < 1 || h > 5)
+      return;
+    this->tiling_h_ = h;
+  } else if (slot == 2) {
+    uint8_t v = (uint8_t) value;
+    if (v < 1 || v > 5)
+      return;
+    this->tiling_v_ = v;
+  } else {
+    return;
+  }
+  this->send_tiling_set_();
+  if (slot == 0 && this->tiling_position_number_ != nullptr)
+    this->tiling_position_number_->publish_state((float) this->tiling_position_);
+  if (slot == 1 && this->tiling_h_number_ != nullptr)
+    this->tiling_h_number_->publish_state((float) this->tiling_h_);
+  if (slot == 2 && this->tiling_v_number_ != nullptr)
+    this->tiling_v_number_->publish_state((float) this->tiling_v_);
+}
 
 // ---- Child entities ----
 
@@ -713,6 +1048,82 @@ void SicpVolumeNumber::control(float value) {
 void SicpVideoParamNumber::control(float value) {
   if (this->parent_ != nullptr)
     this->parent_->request_video_param(this->slot_, value);
+  else
+    this->publish_state(value);
+}
+
+void SicpLockSwitch::write_state(bool state) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_input_lock(this->slot_, state);
+  else
+    this->publish_state(state);
+}
+
+void SicpColdStartSelect::control(const std::string &value) {
+  if (this->parent_ == nullptr)
+    return;
+  for (size_t i = 0; i < PhilipsSicp::cold_start_options_size(); i++) {
+    if (value == PhilipsSicp::cold_start_options()[i]) {
+      this->parent_->request_cold_start_by_index(i);
+      return;
+    }
+  }
+  ESP_LOGW(TAG, "Unknown cold start option '%s'", value.c_str());
+}
+
+void SicpSmartPowerSelect::control(const std::string &value) {
+  if (this->parent_ == nullptr)
+    return;
+  for (size_t i = 0; i < PhilipsSicp::smartpower_options_size(); i++) {
+    if (value == PhilipsSicp::smartpower_options()[i]) {
+      this->parent_->request_smartpower_by_index(i);
+      return;
+    }
+  }
+  ESP_LOGW(TAG, "Unknown SmartPower option '%s'", value.c_str());
+}
+
+void SicpAudioNumber::control(float value) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_audio(this->slot_, value);
+  else
+    this->publish_state(value);
+}
+
+void SicpVolumeLimitNumber::control(float value) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_volume_limit(this->slot_, value);
+  else
+    this->publish_state(value);
+}
+
+void SicpAutoAdjustButton::press_action() {
+  if (this->parent_ != nullptr)
+    this->parent_->request_auto_adjust();
+}
+
+void SicpAutoSignalButton::press_action() {
+  if (this->parent_ != nullptr)
+    this->parent_->request_autosignal_probe();
+}
+
+void SicpTilingEnableSwitch::write_state(bool state) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_tiling_enable(state);
+  else
+    this->publish_state(state);
+}
+
+void SicpTilingFrameSwitch::write_state(bool state) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_tiling_frame(state);
+  else
+    this->publish_state(state);
+}
+
+void SicpTilingNumber::control(float value) {
+  if (this->parent_ != nullptr)
+    this->parent_->request_tiling_geometry(this->slot_, value);
   else
     this->publish_state(value);
 }
