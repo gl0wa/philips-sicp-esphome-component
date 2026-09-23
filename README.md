@@ -132,15 +132,15 @@ entity stays without state there but works where supported.
 | `remote_lock`        | switch      | SET `1C` / GET `1D`   | **doc, ambiguous** — doc packs the report in one bit; remote follows bit0, keyboard is optimistic-only until clarified on hardware. `ON` = unlocked. |
 | `keyboard_lock`      | switch      | SET `1C` (combined)   | **doc** — optimistic-only (see above). `ON` = unlocked.               |
 | `cold_start`         | select      | SET `A3` (no GET)     | **doc** — Off / Forced On / Last Status. Write-only, optimistic. **Changes boot behavior — set deliberately.** |
-| `treble` / `bass`    | number 0–100| SET `42` / GET `43`   | **doc** — bidirectional like volume.                                  |
+| `treble` / `bass`    | number 0–100| SET `42` / GET `43`   | **doc, GET unsupported-here** — GET is answered `00 03` on the tested display; SET path untested. |
 | `min_volume` / `max_volume` / `switch_on_volume` | number 0–100 | SET `B8` (no GET) | **doc** — write-only triple; the component enforces min ≤ switch-on ≤ max. **Overwrites audio constraints — set deliberately.** |
 | `smartpower`         | select      | SET `DD` (no GET)     | **doc, payload uncertain** — Off/Low/Medium/High; payload follows the doc's worked example (`DD level`), the field table suggests an extra type byte. Write-only, optimistic. |
 | `auto_adjust`        | button      | SET `70 40 00`        | **doc** — VGA alignment trigger, no reply data expected.              |
 | `autosignal_probe`   | button      | GET `AF`              | **doc, report unknown** — the document's section is missing; sends the GET and logs the raw reply at DEBUG for discovery. |
-| `tiling`             | switch      | SET `22` / GET `23`   | **doc** — video-wall enable; uses don't-overwrite codes for untouched fields. |
-| `tiling_frame_comp`  | switch      | SET `22` / GET `23`   | **doc** — frame compensation flag.                                    |
-| `tiling_position`    | number 1–25 | SET `22` / GET `23`   | **doc** — wall position.                                              |
-| `tiling_h_monitors` / `tiling_v_monitors` | number 1–5 | SET `22` / GET `23` | **doc** — packed as `(V-1)*5+(H-1)+1` per documented examples. |
+| `tiling`             | switch      | SET `22` / GET `23`   | **doc, GET unsupported-here** — GET is answered `00 03` on the tested display; uses don't-overwrite codes for untouched fields. |
+| `tiling_frame_comp`  | switch      | SET `22` / GET `23`   | **doc** — frame compensation flag (same support note).                |
+| `tiling_position`    | number 1–25 | SET `22` / GET `23`   | **doc** — wall position (same support note).                          |
+| `tiling_h_monitors` / `tiling_v_monitors` | number 1–5 | SET `22` / GET `23` | **doc** — packed as `(V-1)*5+(H-1)+1` per documented examples (same support note). |
 
 Deliberately **not** implemented: light sensor (`24`/`25`), OSD rotating
 (`26`/`27`), MEMC (`28`/`29`), touch (`1E`/`1F`) — the SICP document marks
