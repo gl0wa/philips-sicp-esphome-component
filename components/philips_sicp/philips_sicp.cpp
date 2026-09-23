@@ -401,9 +401,27 @@ void PhilipsSicp::on_ack_report_(uint8_t value) {
     return;
   }
   // Observed on hardware: e.g. a temperature GET on a display without that
-  // sensor is answered with 00 03. Treat unknown comm-control values as
-  // terminal for this attempt instead of retrying.
-  ESP_LOGW(TAG, "Unknown comm-control value %02X", value);
+  // sensor is answered with 00 03. This value acts as an "unsupported"
+  // marker: remember the GET code and stop polling it (one warning, then
+  // quiet). Only learned while powered on, so standby replies can never
+  // disable a feature; the set is cleared on every power-on transition.
+  uint8_t outstanding_cmd = 0;
+  bool was_get = false;
+  if (this->outstanding_.active && !this->outstanding_.sicp.empty()) {
+    outstanding_cmd = this->outstanding_.sicp[0];
+    was_get = this->outstanding_.expect_report;
+  }
+  if (value == 0x03 && was_get && outstanding_cmd != 0 && this->power_on_ &&
+      this->unsupported_gets_.find(outstanding_cmd) == this->unsupported_gets_.end()) {
+    this->unsupported_gets_.insert(outstanding_cmd);
+    ESP_LOGW(TAG, "Display reports command %02X as unsupported (00 03); will stop polling it",
+             outstanding_cmd);
+  } else if (value == 0x03) {
+    ESP_LOGD(TAG, "Unsupported-command marker (00 03) for [%s]",
+             this->outstanding_.active ? hex_dump(this->outstanding_.sicp).c_str() : "<idle>");
+  } else {
+    ESP_LOGW(TAG, "Unknown comm-control value %02X", value);
+  }
   // Terminal for this attempt: the display answered with something we do not
   // understand (e.g. an undocumented error reply), retrying will not help.
   this->outstanding_.active = false;
@@ -462,12 +480,18 @@ void PhilipsSicp::on_sicp_report_(const std::vector<uint8_t> &data) {
 void PhilipsSicp::handle_power_report_(const std::vector<uint8_t> &data) {
   if (data.size() < 2)
     return;
-  bool on = (data[1] == 0x02);
-  ESP_LOGD(TAG, "Power report value=%02X on=%d switch=%s", data[1], (int) on,
-           this->power_switch_ != nullptr ? "set" : "null");  if (data[1] != 0x01 && data[1] != 0x02) {
+  if (data[1] != 0x01 && data[1] != 0x02) {
     ESP_LOGW(TAG, "Unexpected power value %02X", data[1]);
     return;
   }
+  bool on = (data[1] == 0x02);
+  if (on && !this->power_on_ && !this->unsupported_gets_.empty()) {
+    // Fresh power-on: capabilities may answer again, re-probe everything.
+    ESP_LOGD(TAG, "Display powered on, re-probing %u skipped command(s)",
+             (unsigned) this->unsupported_gets_.size());
+    this->unsupported_gets_.clear();
+  }
+  this->power_on_ = on;
   if (this->power_switch_ != nullptr)
     this->power_switch_->publish_state(on);
 }
@@ -715,6 +739,10 @@ void PhilipsSicp::request_video_param(size_t slot, float value) {
     this->sharpness_number_->publish_state((float) v);
 }
 
+bool PhilipsSicp::is_poll_allowed_(uint8_t get_code) const {
+  return this->unsupported_gets_.find(get_code) == this->unsupported_gets_.end();
+}
+
 void PhilipsSicp::request_poll_once_() {
   // Round-robin over enabled pollable entities: one GET per update() call.
   // Order is fixed; disabled entities are skipped.
@@ -818,6 +846,19 @@ void PhilipsSicp::request_poll_once_() {
         enqueued = false;
         break;
     }
+    // Skip GETs the display proved unsupported (00 03 reply while on).
+    // Slot order matches the cases above; 0 means "no GET code".
+    static const uint8_t SLOT_GET_CODES[14] = {
+        CMD_POWER_GET,  CMD_INPUT_GET,      CMD_VOLUME_GET, CMD_PICTURE_FORMAT_GET,
+        CMD_VIDEO_GET,  CMD_MISC_GET,       CMD_TEMP_GET,   CMD_PIP_SOURCE_GET,
+        CMD_VERSION_GET, CMD_VERSION_GET,   CMD_INPUT_LOCK_GET, CMD_AUDIO_GET,
+        CMD_SERIAL_GET, CMD_TILING_GET,
+    };
+    static_assert(sizeof(SLOT_GET_CODES) / sizeof(SLOT_GET_CODES[0]) == NUM_SLOTS,
+                  "SLOT_GET_CODES must cover every poll slot");
+    if (enqueued && slot < 14 && SLOT_GET_CODES[slot] != 0 &&
+        !this->is_poll_allowed_(SLOT_GET_CODES[slot]))
+      enqueued = false;
     if (enqueued) {
       this->poll_slot_ = (slot + 1) % NUM_SLOTS;
       return;

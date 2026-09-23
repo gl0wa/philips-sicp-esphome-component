@@ -211,3 +211,33 @@ def test_volume_limits_rule():
     assert clamp_volume_limits(10, 77, 50) == (10, 77, 50)
     assert clamp_volume_limits(60, 77, 50) == (60, 77, 60)
     assert clamp_volume_limits(10, 40, 50) == (10, 40, 40)
+
+
+class UnsupportedTracker:
+    """Mirror of the C++ unsupported-GET learning (00 03 marker)."""
+
+    def __init__(self):
+        self.unsupported = set()
+        self.power_on = True
+
+    def note_reply(self, get_code, value):
+        if value == 0x03 and self.power_on and get_code:
+            self.unsupported.add(get_code)
+
+    def poll_allowed(self, get_code):
+        return get_code not in self.unsupported
+
+
+def test_unsupported_learning():
+    t = UnsupportedTracker()
+    assert t.poll_allowed(0x43)
+    t.note_reply(0x43, 0x03)  # audio GET -> 00 03 while on
+    t.note_reply(0x23, 0x03)  # tiling GET -> 00 03 while on
+    assert not t.poll_allowed(0x43)
+    assert not t.poll_allowed(0x23)
+    assert t.poll_allowed(0x45)  # volume unaffected
+    # Standby replies must never disable a feature.
+    t2 = UnsupportedTracker()
+    t2.power_on = False
+    t2.note_reply(0x43, 0x03)
+    assert t2.poll_allowed(0x43)

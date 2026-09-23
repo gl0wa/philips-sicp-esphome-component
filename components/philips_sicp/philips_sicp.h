@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <set>
 #include <vector>
 
 #include "esphome/components/button/button.h"
@@ -182,6 +183,8 @@ class PhilipsSicp : public PollingComponent, public uart::UARTDevice {
 
   void request_poll_once_();
   void send_tiling_set_();
+  // True unless this GET code proved unsupported (00 03 reply while on).
+  bool is_poll_allowed_(uint8_t get_code) const;
   std::deque<QueuedCommand> queue_;
   Outstanding outstanding_{};
   std::vector<uint8_t> rx_buf_{};
@@ -216,6 +219,11 @@ class PhilipsSicp : public PollingComponent, public uart::UARTDevice {
   uint8_t tiling_h_{1};
   uint8_t tiling_v_{1};
   uint8_t last_version_label_{0};
+  // GET codes the display answered with 00 03 ("unsupported" marker) while
+  // powered on. Their poll slots are skipped to keep logs quiet; cleared
+  // whenever the display powers on (capabilities are re-probed).
+  std::set<uint8_t> unsupported_gets_{};
+  bool power_on_{true};
 
   switch_::Switch *power_switch_{nullptr};
   switch_::Switch *pip_switch_{nullptr};

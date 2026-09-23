@@ -201,9 +201,13 @@ handled by the component:
   `00 06`. Both values are accepted as ACK; `00 15` (NACK) is retried and
   `00 18` (NAV) completes the attempt.
 - A temperature GET (`2F`) on a display without that sensor is answered with
-  the undocumented comm-control value `00 03`. Unknown comm-control values
-  complete the attempt without retrying, and the temperature entity simply
-  remains without state on such displays.
+  the undocumented comm-control value `00 03`. The same marker is returned
+  for audio (`43`) and tiling (`23`) GETs on displays lacking those features.
+  The component treats `00 03` as "unsupported": it logs one warning naming
+  the command, then stops polling it, so logs stay quiet. Learning only
+  happens while the display reports power ON (standby replies can never
+  disable a feature), and the skip list is cleared on every power-on
+  transition so capabilities are re-probed.
 
 RX handling accepts both the extended framing above and the documented
 generic SICP framing (`MsgSize Control Data... Checksum`, XOR checksum) as a
